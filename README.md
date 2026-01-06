@@ -19,7 +19,10 @@ If you don’t know what these mean, do not run the script.
 
 Clone the repository:
 
+''' bash
 git clone https://github.com/YOURNAME/caelestia-bootstrap.git
+'''
+
 cd caelestia-bootstrap
 
 
