@@ -20,7 +20,7 @@ If you don’t know what these mean, do not run the script.
 Clone the repository:
 
 ``` 
-https://github.com/YOURNAME/caelestia-bootstrap.git 
+https://github.com/AIWizard3/caelestia-bootstrap.git
 ```
 
 
