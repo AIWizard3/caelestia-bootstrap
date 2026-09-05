@@ -8,36 +8,21 @@ set -Eeuo pipefail
 DRY_RUN=false
 INSTALL_SDDM=true
 INSTALL_WALLPAPERS=true
-INSTALL_EXTRAS=true   # polkit agent, network manager, bluetooth, lock/idle, etc.
+INSTALL_EXTRAS=true
 
 for arg in "$@"; do
   case $arg in
-    --dry-run)        DRY_RUN=true ;;
-    --no-sddm)        INSTALL_SDDM=false ;;
-    --no-wallpapers)  INSTALL_WALLPAPERS=false ;;
-    --no-extras)      INSTALL_EXTRAS=false ;;
-    -h|--help)
-      cat <<EOF
-Usage: $0 [options]
-  --dry-run         Print commands instead of running them
-  --no-sddm         Skip installing/configuring SDDM + Astronaut theme
-  --no-wallpapers   Skip cloning the wallpaper pack
-  --no-extras       Skip QoL extras (polkit agent, NetworkManager, Bluetooth,
-                     hyprlock/hypridle, notifications, screenshots, etc.)
-  -h, --help        Show this help
-EOF
-      exit 0
-      ;;
-    *)
-      echo "⚠️  Unknown option: $arg (use --help to see valid options)"
-      ;;
+    --dry-run) DRY_RUN=true ;;
+    --no-sddm) INSTALL_SDDM=false ;;
+    --no-wallpapers) INSTALL_WALLPAPERS=false ;;
+    --no-extras) INSTALL_EXTRAS=false ;;
   esac
 done
 
 # -----------------------------
 # Logging
 # -----------------------------
-HOME="${HOME:-$(eval echo ~"$(id -un)" 2>/dev/null)}"
+HOME="${HOME:-$(eval echo ~$(id -un) 2>/dev/null)}"
 [[ -z "$HOME" ]] && { echo "❌ Could not determine HOME"; exit 1; }
 
 LOG_FILE="$HOME/caelestia-install.log"
@@ -63,13 +48,11 @@ error_handler() {
 # -----------------------------
 step() { echo -e "\n==> $1"; }
 
-# Runs a command safely (no eval, so quoting/spaces/globs behave correctly).
-# Always pass args as separate words: run sudo pacman -S foo bar
 run() {
   if $DRY_RUN; then
-    printf '[dry-run]'; printf ' %q' "$@"; echo
+    echo "[dry-run] $*"
   else
-    "$@"
+    eval "$@"
   fi
 }
 
@@ -78,6 +61,31 @@ require() {
     echo "❌ Missing required command: $1"
     exit 1
   }
+}
+
+AUR_HELPER=""
+
+ensure_aur_helper() {
+  if command -v yay &>/dev/null; then
+    AUR_HELPER="yay"
+    return
+  fi
+
+  if command -v paru &>/dev/null; then
+    AUR_HELPER="paru"
+    return
+  fi
+
+  step "No AUR helper found — building yay from source"
+
+  run sudo pacman -S --needed --noconfirm base-devel
+
+  YAY_TMP_DIR=$(mktemp -d)
+  run git clone https://aur.archlinux.org/yay-bin.git "$YAY_TMP_DIR"
+  run "cd $YAY_TMP_DIR && makepkg -si --noconfirm"
+
+  AUR_HELPER="yay"
+  require "$AUR_HELPER"
 }
 
 # -----------------------------
@@ -98,42 +106,10 @@ if ! pidof systemd &>/dev/null; then
   INSTALL_SDDM=false
 fi
 
-# network check (curl over HTTPS is more reliable than ICMP, which is
-# frequently blocked by firewalls/VPNs even when the network is fine)
-if command -v curl &>/dev/null; then
-  curl -fsSL --max-time 5 -o /dev/null https://github.com || {
-    echo "❌ No internet connection (HTTPS check failed)"
-    exit 1
-  }
-else
-  ping -c 1 -W 5 github.com &>/dev/null || {
-    echo "❌ No internet connection"
-    exit 1
-  }
-fi
-
-# -----------------------------
-# AUR helper (needed: qt5ct-kde, qt6ct-kde, app2unit are AUR-only)
-# -----------------------------
-AUR_HELPER=""
-if command -v yay &>/dev/null; then
-  AUR_HELPER="yay"
-elif command -v paru &>/dev/null; then
-  AUR_HELPER="paru"
-fi
-
-if [[ -z "$AUR_HELPER" ]]; then
-  step "No AUR helper found — installing yay"
-  TMP_YAY=$(mktemp -d)
-  run git clone https://aur.archlinux.org/yay-bin.git "$TMP_YAY"
-  if ! $DRY_RUN; then
-    (cd "$TMP_YAY" && makepkg -si --noconfirm)
-  fi
-  AUR_HELPER="yay"
-fi
-
-aur_install() {
-  run "$AUR_HELPER" -S --needed --noconfirm "$@"
+# network check
+ping -c 1 github.com &>/dev/null || {
+  echo "❌ No internet connection"
+  exit 1
 }
 
 # -----------------------------
@@ -143,9 +119,9 @@ step "Updating system"
 run sudo pacman -Syu --noconfirm
 
 # -----------------------------
-# Official repo packages
+# Packages
 # -----------------------------
-step "Installing packages (official repos)"
+step "Installing packages"
 run sudo pacman -S --needed --noconfirm \
   hyprland \
   xdg-desktop-portal-hyprland \
@@ -154,6 +130,7 @@ run sudo pacman -S --needed --noconfirm \
   wl-clipboard \
   cliphist \
   inotify-tools \
+  app2unit \
   wireplumber \
   trash-cli \
   foot \
@@ -165,47 +142,13 @@ run sudo pacman -S --needed --noconfirm \
   eza \
   adw-gtk-theme \
   papirus-icon-theme \
-  qt5ct \
-  qt6ct \
+  qt5ct-kde \
+  qt6ct-kde \
   ttf-jetbrains-mono-nerd \
   git
 
-# -----------------------------
-# AUR packages
-# -----------------------------
-step "Installing packages (AUR)"
-aur_install app2unit qt5ct-kde qt6ct-kde
-
 require Hyprland
 require fish
-
-# -----------------------------
-# Desktop QoL extras (optional)
-# -----------------------------
-if $INSTALL_EXTRAS; then
-  step "Installing desktop extras (polkit, network, bluetooth, lock/idle, utils)"
-
-  run sudo pacman -S --needed --noconfirm \
-    hyprpolkitagent \
-    networkmanager \
-    network-manager-applet \
-    bluez \
-    bluez-utils \
-    blueman \
-    hyprlock \
-    hypridle \
-    mako \
-    grim \
-    slurp \
-    hyprshot \
-    brightnessctl \
-    hyprsunset \
-    rofi-wayland \
-    pavucontrol
-
-  run sudo systemctl enable NetworkManager
-  run sudo systemctl enable bluetooth
-fi
 
 # -----------------------------
 # SDDM (optional)
@@ -219,29 +162,23 @@ if $INSTALL_SDDM; then
   run sudo systemctl enable sddm
 
   echo "⚠️ Disabling other display managers"
-  for dm in gdm lightdm ly; do
-    if systemctl is-enabled "$dm" &>/dev/null; then
-      run sudo systemctl disable "$dm"
-    fi
-  done
+  run sudo systemctl disable gdm lightdm ly 2>/dev/null || true
 
   # Theme install
   step "Installing Astronaut theme"
 
   TMP_DIR=$(mktemp -d)
-  run git clone https://github.com/Keyitdev/sddm-astronaut-theme.git "$TMP_DIR"
+  git clone https://github.com/Keyitdev/sddm-astronaut-theme.git "$TMP_DIR"
 
   ASTRONAUT_DIR="/usr/share/sddm/themes/astronaut"
 
   run sudo rm -rf "$ASTRONAUT_DIR"
   run sudo mv "$TMP_DIR" "$ASTRONAUT_DIR"
 
-  if ! $DRY_RUN; then
-    [[ -f "$ASTRONAUT_DIR/theme.conf" ]] || {
-      echo "❌ Theme install failed"
-      exit 1
-    }
-  fi
+  [[ -f "$ASTRONAUT_DIR/theme.conf" ]] || {
+    echo "❌ Theme install failed"
+    exit 1
+  }
 
   # Config
   step "Configuring SDDM"
@@ -281,7 +218,16 @@ fi
 # -----------------------------
 step "Installing Caelestia"
 
+# The old install.fish script is deprecated. Caelestia is now installed via
+# its AUR-packaged CLI, which reads manifest.toml from the dots repo to
+# install packages and symlink configs — see caelestia-dots/caelestia's README.
+ensure_aur_helper
+
+run "$AUR_HELPER" -S --needed --noconfirm caelestia-cli
+require caelestia
+
 DOTS_DIR="$HOME/.local/share/caelestia"
+export CAELESTIA_DOTS="$DOTS_DIR"
 
 mkdir -p "$(dirname "$DOTS_DIR")"
 
@@ -289,16 +235,62 @@ if [[ ! -d "$DOTS_DIR" ]]; then
   run git clone https://github.com/caelestia-dots/caelestia.git "$DOTS_DIR"
 fi
 
-INSTALL_FISH="$DOTS_DIR/install.fish"
+echo "ℹ️  'caelestia install' may prompt to confirm backing up an existing"
+echo "   config directory, and to pick optional components (spotify,"
+echo "   vscodium, zed, discord, nvim). Discord and a browser are already"
+echo "   installed above, so those two can be skipped unless you also want"
+echo "   Caelestia's own theming applied to them."
 
-if ! $DRY_RUN; then
-  [[ -f "$INSTALL_FISH" ]] || {
-    echo "❌ install.fish missing"
-    exit 1
-  }
+run caelestia install
+
+# -----------------------------
+# Auto-select Hyprland at the SDDM login screen
+# -----------------------------
+if $INSTALL_SDDM; then
+  step "Defaulting login screen to Hyprland"
+
+  CURRENT_USER="$(id -un)"
+
+  # AccountsService is what SDDM reads to pre-select a session, so the very
+  # first login (not just subsequent ones) goes straight to Hyprland with no
+  # session picker involved — just type the password and hit enter.
+  run sudo mkdir -p /var/lib/AccountsService/users
+  run sudo tee "/var/lib/AccountsService/users/$CURRENT_USER" > /dev/null <<EOF
+[User]
+Session=hyprland
+XSession=hyprland
+EOF
+
+  # Some display managers fall back to ~/.dmrc instead — set it too, cheap insurance.
+  if ! $DRY_RUN; then
+    cat > "$HOME/.dmrc" <<EOF
+[Desktop]
+Session=hyprland
+EOF
+  fi
 fi
 
-run fish "$INSTALL_FISH"
+# -----------------------------
+# Ensure the Caelestia shell autostarts on login
+# -----------------------------
+step "Verifying Caelestia shell autostart"
+
+# 'caelestia install' normally wires this up already via an exec-once in the
+# caelestia hyprland config. This is just a safety net in case that line is
+# ever missing — it adds the autostart to hypr-user.conf, the sanctioned spot
+# for user customizations that caelestia updates won't overwrite.
+if ! $DRY_RUN; then
+  if ! grep -rq "caelestia shell" "$HOME/.config/hypr" 2>/dev/null \
+    && ! grep -rq "caelestia shell" "$DOTS_DIR" 2>/dev/null; then
+    echo "⚠️ Caelestia shell autostart not found — adding fallback"
+
+    CAELESTIA_USER_CONF="$HOME/.config/caelestia/hypr-user.conf"
+    mkdir -p "$(dirname "$CAELESTIA_USER_CONF")"
+
+    grep -Fxq "exec-once = caelestia shell -d" "$CAELESTIA_USER_CONF" 2>/dev/null \
+      || echo "exec-once = caelestia shell -d" >> "$CAELESTIA_USER_CONF"
+  fi
+fi
 
 # -----------------------------
 # Wallpapers (optional)
@@ -306,14 +298,28 @@ run fish "$INSTALL_FISH"
 if $INSTALL_WALLPAPERS; then
   step "Installing wallpapers"
 
-  # Respect XDG user dirs if set, otherwise fall back sanely
-  PICTURES_DIR="${XDG_PICTURES_DIR:-$HOME/Pictures}"
-  WALL_DIR="$PICTURES_DIR/wallpapers"
+  WALL_DIR="$HOME/pictures/wallpapers"
   mkdir -p "$WALL_DIR"
 
   if [[ ! -d "$WALL_DIR/wallpaper" ]]; then
     run git clone https://github.com/mylinuxforwork/wallpaper.git "$WALL_DIR/wallpaper"
   fi
+fi
+
+# -----------------------------
+# Essentials: browser + Discord (optional)
+# -----------------------------
+if $INSTALL_EXTRAS; then
+  step "Installing lightweight browser"
+
+  # qutebrowser: keyboard-driven, minimal resource footprint, in the official repos
+  run sudo pacman -S --needed --noconfirm qutebrowser
+
+  step "Installing Discord"
+
+  # Discord isn't in the official Arch repos, only the AUR.
+  ensure_aur_helper
+  run "$AUR_HELPER" -S --needed --noconfirm discord
 fi
 
 # -----------------------------
@@ -323,28 +329,10 @@ step "Applying Wayland fix"
 
 HYPR_CONF="$HOME/.config/hypr/hyprland.conf"
 mkdir -p "$(dirname "$HYPR_CONF")"
-touch "$HYPR_CONF"
 
 LINE="exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP"
 
-if ! grep -Fxq "$LINE" "$HYPR_CONF"; then
-  if $DRY_RUN; then
-    echo "[dry-run] append to $HYPR_CONF: $LINE"
-  else
-    echo "$LINE" >> "$HYPR_CONF"
-  fi
-fi
-
-if $INSTALL_EXTRAS; then
-  POLKIT_LINE="exec-once = systemctl --user start hyprpolkitagent"
-  if ! grep -Fxq "$POLKIT_LINE" "$HYPR_CONF"; then
-    if $DRY_RUN; then
-      echo "[dry-run] append to $HYPR_CONF: $POLKIT_LINE"
-    else
-      echo "$POLKIT_LINE" >> "$HYPR_CONF"
-    fi
-  fi
-fi
+grep -Fxq "$LINE" "$HYPR_CONF" || echo "$LINE" >> "$HYPR_CONF"
 
 # -----------------------------
 # Done
